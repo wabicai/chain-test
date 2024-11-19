@@ -1,0 +1,26 @@
+{
+  "name": "chain-test",
+  "version": "1.0.0",
+  "description": "Benfen Chain Transaction SDK",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "start": "DEBUG=bfc:* ts-node src/examples/transfer.ts"
+  },
+  "dependencies": {
+    "@benfen/bfc.js": "0.2.7",
+    "debug": "^4.3.4",
+    "ethers": "^6.7.0",
+    "typescript": "5.3.3",
+    "web3": "^4.1.1"
+  },
+  "devDependencies": {
+    "@types/debug": "^4.1.12",
+    "@types/jest": "^29.5.0",
+    "@types/node": "^18.15.0",
+    "jest": "^29.5.0",
+    "ts-jest": "^29.1.0"
+  }
+}
