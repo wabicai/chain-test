@@ -4,18 +4,17 @@ import { logger } from "../utils/logger";
 async function main() {
   try {
     const privateKey =
-      "benfenprivkey1qqld4glnppa4ksw7chap3z9x5l2sd2jl2le96r0aj8nqcd2q3e6yxlnl2km";
+      "2c59ac9ab2cb4eba4f23521652dd47490f28e644798bd093e091ce024853056a6e9c9ef745cc3a250168db15526d18075dc52849d49f8a6ea5477c1c264b4848";
     const bfcImpl = new BfcTransactionImpl(privateKey);
 
     const txParams = {
       payload: {
-        from: "BFC40e481aec3350c696baad5599489615e20c9654205ba4bfba7bd3588fdbe027f96a2",
-        to: "BFC01a2ca320af7932b8575eebbc265e0f75c91ccfc7148677ebb00e1872244ec0cacb4",
-        value: "1",
+        from: "BFCb4ced58018b75d7ba72a10fa97c09b7bf66533ff104bf9db1bfdb004b17d8eaa2e35",
+        to: "BFC17f3a9bd36da0639153d3c38032217ea298eb1991e0a62cc5924e2dd712937359128",
+        value: "0.01",
         gasLimit: "21000",
         data: "0x",
       },
-      showOnOneKey: true,
       chainId: 1,
       path: "m/44'/728'/0'/0/0",
     };
