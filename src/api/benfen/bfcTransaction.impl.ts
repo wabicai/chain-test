@@ -7,6 +7,12 @@ import { Ed25519Keypair } from "@benfen/bfc.js/keypairs/ed25519";
 import { logger } from "../../utils/logger";
 import { CommonParams } from "../../types/params";
 import { BfcSignedTx, BfcTransactionParams } from "./bfcTransaction";
+import { BigNumber } from "bignumber.js";
+import {
+  bfc2HexAddress,
+  normalizeStructTag,
+  parseStructTag,
+} from "@benfen/bfc.js/utils";
 import {
   decodeBenfenPrivateKey,
   IntentScope,
@@ -96,37 +102,83 @@ export class BfcTransactionImpl {
       const { payload } = params;
       const tx = new TransactionBlock();
 
-      const gasCoins = await this.client.getCoins({
-        owner: payload.from,
-        // coinType: TOKEN_INFO.BUSD.address,
-        coinType: TOKEN_INFO.BFC.address,
-      });
-      logger.debug("Gas coins:", gasCoins);
-      // logger.debug(
-      //   "Gas coins hex:",
-      //   Buffer.from(JSON.stringify(gasCoins)).toString("hex")
-      // );
+      const normalizeStructTagForRpc = (address: string) => {
+        const tag = parseStructTag(address);
+        tag.address = bfc2HexAddress(tag.address);
+        return normalizeStructTag(tag);
+      };
 
-      if (!gasCoins.data || gasCoins.data.length === 0) {
-        throw new Error("No gas coins found for the account");
+      // 获取 BFC coins 用于支付 gas
+      const bfcCoins = await this.client.getCoins({
+        owner: payload.from,
+        coinType: "0x2::bfc::BFC", // 使用主币 BFC
+      });
+
+      // 获取 BUSD coins 用于转账
+      const busdCoins = await this.client.getCoins({
+        owner: payload.from,
+        coinType: normalizeStructTagForRpc(TOKEN_INFO.BUSD.address),
+      });
+
+      // 设置 gas coin
+      if (bfcCoins.data.length > 0) {
+        tx.setGasPayment([
+          {
+            objectId: bfcCoins.data[0].coinObjectId,
+            version: bfcCoins.data[0].version,
+            digest: bfcCoins.data[0].digest,
+          },
+        ]);
+      } else {
+        throw new Error("No BFC available for gas payment");
       }
 
-      tx.setGasPayment(
-        gasCoins.data.map((coin) => ({
-          objectId: coin.coinObjectId,
-          version: coin.version,
-          digest: coin.digest,
-        }))
+      // 计算需要转账的 BUSD 金额
+      const token = TOKEN_INFO.BUSD;
+      const multiplyByDecimal = (
+        amount: string | number | BigNumber,
+        decimal: number
+      ) => {
+        return new BigNumber(amount).shiftedBy(decimal).toString();
+      };
+      const bigintAmount = BigInt(
+        multiplyByDecimal(payload.value, token.decimals)
       );
+
+      // 计算所有 BUSD coins 的总余额
+      const totalBalance = busdCoins.data.reduce(
+        (sum, coin) => sum + BigInt(coin.balance),
+        0n
+      );
+
+      if (totalBalance < bigintAmount) {
+        throw new Error("Insufficient BUSD balance");
+      }
 
       tx.setSender(payload.from);
 
+      // 处理 BUSD 转账
+      let sourceCoin;
+      logger.debug("busdCoins data", busdCoins.data);
+      if (BigInt(busdCoins.data[0].balance) < bigintAmount) {
+        sourceCoin = busdCoins.data[0].coinObjectId;
+        for (let i = 1; i < busdCoins.data.length; i++) {
+          tx.mergeCoins(sourceCoin, [busdCoins.data[i].coinObjectId]);
+          if (
+            BigInt(busdCoins.data[0].balance) +
+              BigInt(busdCoins.data[i].balance) >=
+            bigintAmount
+          ) {
+            break;
+          }
+        }
+      } else {
+        sourceCoin = busdCoins.data[0].coinObjectId;
+      }
 
-      const amountInMist = BigInt(parseFloat(payload.value.toString()) * 1e9);
-      const [primaryCoin] = tx.splitCoins(tx.gas, [
-        tx.pure(amountInMist.toString()),
-      ]);
-      tx.transferObjects([primaryCoin], tx.pure(payload.to));
+      // 分割并转账 BUSD
+      const [transferCoin] = tx.splitCoins(sourceCoin, [tx.pure(bigintAmount)]);
+      tx.transferObjects([transferCoin], tx.pure(payload.to));
 
       const txBytes = await tx.build({
         client: this.client,
@@ -141,8 +193,7 @@ export class BfcTransactionImpl {
       logger.debug("serializeTxn:", serializeTxn);
       logger.debug(
         "serializeTxn hex:",
-        Buffer.from(serializeTxn).toString("hex") +
-          Buffer.from(TOKEN_INFO.BFC.address).toString("hex")
+        Buffer.from(serializeTxn).toString("hex")
       );
 
       const unsignedTxHex = Buffer.from(txBytes).toString("hex");

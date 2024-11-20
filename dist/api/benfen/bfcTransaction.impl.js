@@ -5,6 +5,8 @@ const client_1 = require("@benfen/bfc.js/client");
 const transactions_1 = require("@benfen/bfc.js/transactions");
 const ed25519_1 = require("@benfen/bfc.js/keypairs/ed25519");
 const logger_1 = require("../../utils/logger");
+const bignumber_js_1 = require("bignumber.js");
+const utils_1 = require("@benfen/bfc.js/utils");
 const cryptography_1 = require("@benfen/bfc.js/cryptography");
 exports.TOKEN_INFO = {
     BFC: {
@@ -75,38 +77,72 @@ class BfcTransactionImpl {
             this.validateParams(params);
             const { payload } = params;
             const tx = new transactions_1.TransactionBlock();
-            const gasCoins = await this.client.getCoins({
+            const normalizeStructTagForRpc = (address) => {
+                const tag = (0, utils_1.parseStructTag)(address);
+                tag.address = (0, utils_1.bfc2HexAddress)(tag.address);
+                return (0, utils_1.normalizeStructTag)(tag);
+            };
+            // 获取 BFC coins 用于支付 gas
+            const bfcCoins = await this.client.getCoins({
                 owner: payload.from,
-                // coinType: TOKEN_INFO.BUSD.address,
-                coinType: exports.TOKEN_INFO.BFC.address,
+                coinType: "0x2::bfc::BFC", // 使用主币 BFC
             });
-            logger_1.logger.debug("Gas coins:", gasCoins);
-            // logger.debug(
-            //   "Gas coins hex:",
-            //   Buffer.from(JSON.stringify(gasCoins)).toString("hex")
-            // );
-            if (!gasCoins.data || gasCoins.data.length === 0) {
-                throw new Error("No gas coins found for the account");
+            // 获取 BUSD coins 用于转账
+            const busdCoins = await this.client.getCoins({
+                owner: payload.from,
+                coinType: normalizeStructTagForRpc(exports.TOKEN_INFO.BUSD.address),
+            });
+            // 设置 gas coin
+            if (bfcCoins.data.length > 0) {
+                tx.setGasPayment([
+                    {
+                        objectId: bfcCoins.data[0].coinObjectId,
+                        version: bfcCoins.data[0].version,
+                        digest: bfcCoins.data[0].digest,
+                    },
+                ]);
             }
-            tx.setGasPayment(gasCoins.data.map((coin) => ({
-                objectId: coin.coinObjectId,
-                version: coin.version,
-                digest: coin.digest,
-            })));
+            else {
+                throw new Error("No BFC available for gas payment");
+            }
+            // 计算需要转账的 BUSD 金额
+            const token = exports.TOKEN_INFO.BUSD;
+            const multiplyByDecimal = (amount, decimal) => {
+                return new bignumber_js_1.BigNumber(amount).shiftedBy(decimal).toString();
+            };
+            const bigintAmount = BigInt(multiplyByDecimal(payload.value, token.decimals));
+            // 计算所有 BUSD coins 的总余额
+            const totalBalance = busdCoins.data.reduce((sum, coin) => sum + BigInt(coin.balance), 0n);
+            if (totalBalance < bigintAmount) {
+                throw new Error("Insufficient BUSD balance");
+            }
             tx.setSender(payload.from);
-            const amountInMist = BigInt(parseFloat(payload.value.toString()) * 1e9);
-            const [primaryCoin] = tx.splitCoins(tx.gas, [
-                tx.pure(amountInMist.toString()),
-            ]);
-            tx.transferObjects([primaryCoin], tx.pure(payload.to));
+            // 处理 BUSD 转账
+            let sourceCoin;
+            // if (BigInt(busdCoins.data[0].balance) < bigintAmount) {
+            logger_1.logger.debug("busdCoins data", busdCoins.data);
+            sourceCoin = busdCoins.data[0].coinObjectId;
+            for (let i = 1; i < busdCoins.data.length; i++) {
+                tx.mergeCoins(sourceCoin, [busdCoins.data[i].coinObjectId]);
+                if (BigInt(busdCoins.data[0].balance) +
+                    BigInt(busdCoins.data[i].balance) >=
+                    bigintAmount) {
+                    break;
+                }
+            }
+            // } else {
+            //   sourceCoin = busdCoins.data[0].coinObjectId;
+            // }
+            // 分割并转账 BUSD
+            const [transferCoin] = tx.splitCoins(sourceCoin, [tx.pure(bigintAmount)]);
+            tx.transferObjects([transferCoin], tx.pure(payload.to));
             const txBytes = await tx.build({
                 client: this.client,
                 onlyTransactionKind: false,
             });
             const serializeTxn = (0, cryptography_1.messageWithIntent)(cryptography_1.IntentScope.TransactionData, txBytes);
             logger_1.logger.debug("serializeTxn:", serializeTxn);
-            logger_1.logger.debug("serializeTxn hex:", Buffer.from(serializeTxn).toString("hex") +
-                Buffer.from(exports.TOKEN_INFO.BFC.address).toString("hex"));
+            logger_1.logger.debug("serializeTxn hex:", Buffer.from(serializeTxn).toString("hex"));
             const unsignedTxHex = Buffer.from(txBytes).toString("hex");
             logger_1.logger.debug("unsignedTxHex bytes hex:", unsignedTxHex);
             // 使用 keypair 签名替代硬件签名
