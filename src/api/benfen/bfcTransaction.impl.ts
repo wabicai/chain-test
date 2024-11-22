@@ -10,6 +10,7 @@ import { BfcSignedTx, BfcTransactionParams } from "./bfcTransaction";
 import { BigNumber } from "bignumber.js";
 import {
   bfc2HexAddress,
+  normalizeHexAddress,
   normalizeStructTag,
   parseStructTag,
 } from "@benfen/bfc.js/utils";
@@ -24,8 +25,6 @@ export const TOKEN_INFO = {
     decimals: 9,
     symbol: "BFC",
     name: "BFC",
-    logoURI:
-      "https://obstatic.243096.com/mili/images/currency/chain/Benfen2.png",
   },
   BUSD: {
     address:
@@ -33,28 +32,44 @@ export const TOKEN_INFO = {
     decimals: 9,
     symbol: "BUSD",
     name: "Benfen USD",
-    logoURI:
-      "https://obstatic.243096.com/download/token/images/BenfenTEST/BFC00000000000000000000000000000000000000000000000000000000000000c8e30a::busd::BUSD.png",
   },
-  "BFC-USDT": {
+  BJPY: {
     address:
-      "BFC000000000000000000000000000000000000000000000000000000000000000268e4::bf_usdt::BF_USDT",
+      "BFC00000000000000000000000000000000000000000000000000000000000000c8e30a::bjpy::BJPY",
     decimals: 9,
-    symbol: "BFC-USDT",
-    name: "Benfen USDT",
-    logoURI:
-      "https://obstatic.243096.com/download/token/images/BenfenTEST/BFC000000000000000000000000000000000000000000000000000000000000000268e4::bf_usdt::BF_USDT.png",
+    symbol: "BJPY",
+    name: "Benfen JPY",
   },
-  "BFC-USDC": {
+  LONG: {
     address:
-      "BFC000000000000000000000000000000000000000000000000000000000000000268e4::bf_usdc::BF_USDC",
+      "BFC702c0d96768cf59d25c9dbae218b0678fe1ee599af7a2437f7770ded752d9a1a3909::long::LONG",
+    decimals: 9,
+    symbol: "LONG",
+    name: "Benfen LONG",
+  },
+  USDC: {
+    address:
+      "BFCd9072e36ecba63b60d724978296677601b1671c60693af34f77a86ef94d67d1e8210::bf_usdc::BF_USDC",
     decimals: 9,
     symbol: "BFC-USDC",
     name: "Benfen USDC",
-    logoURI:
-      "https://obstatic.243096.com/download/token/images/BenfenTEST/BFC000000000000000000000000000000000000000000000000000000000000000268e4::bf_usdc::BF_USDC.png",
   },
 };
+export function normalizeBenfenCoinType(coinType: string): string {
+  if (coinType !== "0x2::bfc::BFC") {
+    const [normalAddress, module, name] = coinType.split("::");
+    if (module && name) {
+      try {
+        return `${normalizeHexAddress(
+          normalAddress
+        ).toLowerCase()}::${module}::${name}`;
+      } catch {
+        // pass
+      }
+    }
+  }
+  return coinType;
+}
 export class BfcTransactionImpl {
   private client: BenfenClient;
   private keypair: Ed25519Keypair;
@@ -101,105 +116,148 @@ export class BfcTransactionImpl {
 
       const { payload } = params;
       const tx = new TransactionBlock();
+      tx.setSender(payload.from);
 
-      const normalizeStructTagForRpc = (address: string) => {
-        const tag = parseStructTag(address);
-        tag.address = bfc2HexAddress(tag.address);
-        return normalizeStructTag(tag);
-      };
-
-      // 获取 BFC coins 用于支付 gas
-      const bfcCoins = await this.client.getCoins({
-        owner: payload.from,
-        coinType: "0x2::bfc::BFC", // 使用主币 BFC
-      });
-
-      // 获取 BUSD coins 用于转账
-      const busdCoins = await this.client.getCoins({
-        owner: payload.from,
-        coinType: normalizeStructTagForRpc(TOKEN_INFO.BUSD.address),
-      });
-
-      // 设置 gas coin
-      if (bfcCoins.data.length > 0) {
-        tx.setGasPayment([
-          {
-            objectId: bfcCoins.data[0].coinObjectId,
-            version: bfcCoins.data[0].version,
-            digest: bfcCoins.data[0].digest,
-          },
-        ]);
-      } else {
-        throw new Error("No BFC available for gas payment");
-      }
-
-      // 计算需要转账的 BUSD 金额
       const token = TOKEN_INFO.BUSD;
-      const multiplyByDecimal = (
-        amount: string | number | BigNumber,
-        decimal: number
-      ) => {
-        return new BigNumber(amount).shiftedBy(decimal).toString();
+      logger.debug("Token info:", token);
+
+      // 获取所有 coins
+      const getAllCoinsByCoinType = async (coinType: string) => {
+        const allCoins = await this.client.getCoins({
+          owner: payload.from,
+          coinType,
+        });
+        return allCoins.data;
       };
-      const bigintAmount = BigInt(
-        multiplyByDecimal(payload.value, token.decimals)
+
+      // 计算转账金额（考虑 decimals）
+      const multiplyByDecimal = (
+        amount: string | number,
+        decimal: number
+      ): string => {
+        return new BigNumber(amount)
+          .multipliedBy(new BigNumber(10).pow(decimal))
+          .integerValue(BigNumber.ROUND_DOWN)
+          .toString();
+      };
+
+      // 将金额转换为整数（考虑精度）
+      const amountInSmallestUnit = multiplyByDecimal(
+        payload.value,
+        token.decimals
+      );
+      const bigintAmount = BigInt(amountInSmallestUnit);
+
+      logger.debug(
+        "Transfer amount in smallest unit:",
+        bigintAmount.toString()
       );
 
-      // 计算所有 BUSD coins 的总余额
-      const totalBalance = busdCoins.data.reduce(
+      // 获取 BFC coins 用于 gas
+      const bfcCoins = await getAllCoinsByCoinType("0x2::bfc::BFC");
+      if (bfcCoins.length === 0) {
+        throw new Error("No BFC coins available");
+      }
+
+      // 设置 gas payment
+      const gasCoin = bfcCoins[0];
+      tx.setGasPayment([
+        {
+          objectId: gasCoin.coinObjectId,
+          digest: gasCoin.digest,
+          version: gasCoin.version,
+        },
+      ]);
+
+      // 获取要转账的代币
+      const tokenCoins = await getAllCoinsByCoinType(token.address);
+      if (tokenCoins.length === 0) {
+        throw new Error(`No ${token.symbol} coins available`);
+      }
+
+      // 计算总余额
+      const totalBalance = tokenCoins.reduce(
         (sum, coin) => sum + BigInt(coin.balance),
         0n
       );
 
       if (totalBalance < bigintAmount) {
-        throw new Error("Insufficient BUSD balance");
+        throw new Error(`Insufficient ${token.symbol} balance`);
       }
 
-      tx.setSender(payload.from);
+      // 检查是否需要合并 coins
+      if (BigInt(tokenCoins[0].balance) < bigintAmount) {
+        logger.debug("Need to merge coins for sufficient balance");
 
-      // 处理 BUSD 转账
-      let sourceCoin;
-      logger.debug("busdCoins data", busdCoins.data);
-      if (BigInt(busdCoins.data[0].balance) < bigintAmount) {
-        sourceCoin = busdCoins.data[0].coinObjectId;
-        for (let i = 1; i < busdCoins.data.length; i++) {
-          tx.mergeCoins(sourceCoin, [busdCoins.data[i].coinObjectId]);
-          if (
-            BigInt(busdCoins.data[0].balance) +
-              BigInt(busdCoins.data[i].balance) >=
-            bigintAmount
-          ) {
+        // 找到需要合并的 coins
+        let currentBalance = 0n;
+        const coinsToMerge = [];
+
+        for (const coin of tokenCoins) {
+          currentBalance += BigInt(coin.balance);
+          coinsToMerge.push(coin);
+          if (currentBalance >= bigintAmount) {
             break;
           }
         }
+        logger.debug("Coins to merge:", coinsToMerge);
+
+        // 使用第一个 coin 作为主 coin
+        const primaryCoin = coinsToMerge[0];
+        const primaryCoinInput = tx.object(primaryCoin.coinObjectId);
+
+        // 合并其他 coins 到主 coin
+        if (coinsToMerge.length > 1) {
+          const mergeCoins = coinsToMerge
+            .slice(1)
+            .map((coin) => tx.object(coin.coinObjectId));
+
+          logger.debug(
+            "Merging coins:",
+            coinsToMerge.map((c) => c.coinObjectId)
+          );
+          tx.mergeCoins(primaryCoinInput, mergeCoins);
+        }
+
+        // 分割并转账
+        const [transferCoin] = tx.splitCoins(primaryCoinInput, [
+          tx.pure(bigintAmount),
+        ]);
+        tx.transferObjects([transferCoin], tx.pure(payload.to));
       } else {
-        sourceCoin = busdCoins.data[0].coinObjectId;
+        // 单个 coin 余额足够，直接使用
+        logger.debug("Using single coin for transfer");
+        const primaryCoin = tokenCoins[0];
+        const primaryCoinInput = tx.object(primaryCoin.coinObjectId);
+
+        const [transferCoin] = tx.splitCoins(primaryCoinInput, [
+          tx.pure(bigintAmount),
+        ]);
+        tx.transferObjects([transferCoin], tx.pure(payload.to));
       }
 
-      // 分割并转账 BUSD
-      const [transferCoin] = tx.splitCoins(sourceCoin, [tx.pure(bigintAmount)]);
-      tx.transferObjects([transferCoin], tx.pure(payload.to));
-
+      logger.debug("Building transaction...");
       const txBytes = await tx.build({
         client: this.client,
         onlyTransactionKind: false,
       });
+      logger.debug("Transaction built successfully");
 
       const serializeTxn = messageWithIntent(
         IntentScope.TransactionData,
         txBytes
       );
-
-      logger.debug("serializeTxn:", serializeTxn);
+      // const tokenCoins = await getAllCoinsByCoinType(token.address);
+      logger.debug("Token coins:", tokenCoins);
       logger.debug(
-        "serializeTxn hex:",
-        Buffer.from(serializeTxn).toString("hex")
+        "serializeTxn hex with coinType:",
+        Buffer.from(serializeTxn).toString("hex") +
+          Buffer.from(tokenCoins[0].coinType).toString("hex")
       );
 
       const unsignedTxHex = Buffer.from(txBytes).toString("hex");
       logger.debug("unsignedTxHex bytes hex:", unsignedTxHex);
 
-      // 使用 keypair 签名替代硬件签名
       const { signature, bytes } = await this.keypair.signTransactionBlock(
         txBytes
       );
@@ -230,4 +288,104 @@ export class BfcTransactionImpl {
       throw new Error("Missing required transaction parameters");
     }
   }
+
+  // 添加一个新的方法用于分割 coin
+  async splitTokenCoin(
+    address: string,
+    amounts: bigint[],
+    tokenSymbol: "BUSD" | "BFC" = "BUSD"
+  ): Promise<void> {
+    try {
+      const tx = new TransactionBlock();
+      tx.setSender(address);
+
+      const token = TOKEN_INFO[tokenSymbol];
+      logger.debug("Token info:", token);
+
+      // 获取所有 coins
+      const getAllCoinsByCoinType = async (coinType: string) => {
+        const allCoins = await this.client.getCoins({
+          owner: address,
+          coinType,
+        });
+        return allCoins.data;
+      };
+
+      // 获取 BFC coins 用于 gas
+      const bfcCoins = await getAllCoinsByCoinType("0x2::bfc::BFC");
+      if (bfcCoins.length === 0) {
+        throw new Error("No BFC coins available for gas");
+      }
+
+      // 获取要分割的代币
+      const tokenCoins = await getAllCoinsByCoinType(token.address);
+      if (tokenCoins.length === 0) {
+        throw new Error(`No ${tokenSymbol} coins available`);
+      }
+
+      // 计算总分割金额
+      const totalSplitAmount = amounts.reduce(
+        (sum, amount) => sum + amount,
+        0n
+      );
+      logger.debug("Total split amount:", totalSplitAmount.toString());
+
+      // 使用第一个 BFC coin 作为 gas payment
+      tx.setGasPayment([
+        {
+          objectId: bfcCoins[0].coinObjectId,
+          digest: bfcCoins[0].digest,
+          version: bfcCoins[0].version,
+        },
+      ]);
+
+      // 使用第一个代币 coin 作为分割源
+      const primaryCoin = tokenCoins[0];
+
+      // 检查余额是否足够
+      if (BigInt(primaryCoin.balance) < totalSplitAmount) {
+        throw new Error(`Insufficient ${tokenSymbol} balance for split`);
+      }
+
+      logger.debug("Splitting coin into multiple coins...");
+      logger.debug("Amounts:", amounts);
+
+      // 创建 coin 对象引用
+      const primaryCoinInput = tx.object(primaryCoin.coinObjectId);
+
+      // 逐个分割 coin
+      for (const amount of amounts) {
+        const [splitCoin] = tx.splitCoins(primaryCoinInput, [tx.pure(amount)]);
+        tx.transferObjects([splitCoin], tx.pure(address));
+      }
+
+      logger.debug("Building transaction...");
+      const txBytes = await tx.build({
+        client: this.client,
+        onlyTransactionKind: false,
+      });
+      logger.debug("Transaction built successfully");
+
+      const { signature } = await this.keypair.signTransactionBlock(txBytes);
+      logger.debug("Transaction signed successfully");
+
+      const response = await this.client.executeTransactionBlock({
+        transactionBlock: txBytes,
+        signature: signature,
+      });
+
+      logger.debug("Split transaction completed:", response.digest);
+    } catch (error: any) {
+      logger.error("Split operation failed:", error);
+      throw new Error(`Split operation failed: ${error.message}`);
+    }
+  }
+
+  // 使用示例：
+  // const bfcTransaction = new BfcTransactionImpl(privateKey);
+  // await bfcTransaction.splitBfcCoin(address, [
+  //   10000000n,  // 0.01 BFC
+  //   20000000n,  // 0.02 BFC
+  //   30000000n   // 0.03 BFC
+  // ]);
 }

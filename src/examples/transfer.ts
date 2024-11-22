@@ -19,6 +19,12 @@ async function main() {
       path: "m/44'/728'/0'/0/0",
     };
 
+    await bfcImpl.splitTokenCoin(txParams.payload.from, [
+      10000000n, // 0.01 BFC
+      20000000n, // 0.02 BFC
+      30000000n, // 0.03 BFC
+    ]);
+    
     logger.info("Starting BFC transfer with params:", txParams);
     const result = await bfcImpl.sendTransaction(txParams);
     logger.info("Transaction completed:", {

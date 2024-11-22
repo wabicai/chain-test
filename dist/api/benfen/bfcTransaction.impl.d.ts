@@ -6,34 +6,38 @@ export declare const TOKEN_INFO: {
         decimals: number;
         symbol: string;
         name: string;
-        logoURI: string;
     };
     BUSD: {
         address: string;
         decimals: number;
         symbol: string;
         name: string;
-        logoURI: string;
     };
-    "BFC-USDT": {
+    BJPY: {
         address: string;
         decimals: number;
         symbol: string;
         name: string;
-        logoURI: string;
     };
-    "BFC-USDC": {
+    LONG: {
         address: string;
         decimals: number;
         symbol: string;
         name: string;
-        logoURI: string;
+    };
+    USDC: {
+        address: string;
+        decimals: number;
+        symbol: string;
+        name: string;
     };
 };
+export declare function normalizeBenfenCoinType(coinType: string): string;
 export declare class BfcTransactionImpl {
     private client;
     private keypair;
     constructor(privateKey?: string);
     sendTransaction(params: CommonParams & BfcTransactionParams): Promise<BfcSignedTx>;
     private validateParams;
+    splitTokenCoin(address: string, amounts: bigint[], tokenSymbol?: "BUSD" | "BFC"): Promise<void>;
 }
