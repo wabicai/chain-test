@@ -118,150 +118,127 @@ export class BfcTransactionImpl {
       const tx = new TransactionBlock();
       tx.setSender(payload.from);
 
-      const token = TOKEN_INFO.BUSD;
-      logger.debug("Token info:", token);
+      const token = TOKEN_INFO.BFC;
 
-      // 获取所有 coins
-      const getAllCoinsByCoinType = async (coinType: string) => {
-        const allCoins = await this.client.getCoins({
-          owner: payload.from,
-          coinType,
-        });
-        return allCoins.data;
-      };
+      // Get all coins
+      const allCoins = await this.client.getCoins({
+        owner: payload.from,
+        coinType: token.address,
+      });
+      const coins = allCoins.data;
 
-      // 计算转账金额（考虑 decimals）
-      const multiplyByDecimal = (
-        amount: string | number,
-        decimal: number
-      ): string => {
-        return new BigNumber(amount)
-          .multipliedBy(new BigNumber(10).pow(decimal))
-          .integerValue(BigNumber.ROUND_DOWN)
-          .toString();
-      };
-
-      // 将金额转换为整数（考虑精度）
-      const amountInSmallestUnit = multiplyByDecimal(
-        payload.value,
-        token.decimals
-      );
-      const bigintAmount = BigInt(amountInSmallestUnit);
-
-      logger.debug(
-        "Transfer amount in smallest unit:",
-        bigintAmount.toString()
-      );
-
-      // 获取 BFC coins 用于 gas
-      const bfcCoins = await getAllCoinsByCoinType("0x2::bfc::BFC");
-      if (bfcCoins.length === 0) {
-        throw new Error("No BFC coins available");
-      }
-
-      // 设置 gas payment
-      const gasCoin = bfcCoins[0];
-      tx.setGasPayment([
-        {
-          objectId: gasCoin.coinObjectId,
-          digest: gasCoin.digest,
-          version: gasCoin.version,
-        },
-      ]);
-
-      // 获取要转账的代币
-      const tokenCoins = await getAllCoinsByCoinType(token.address);
-      if (tokenCoins.length === 0) {
+      if (coins.length === 0) {
         throw new Error(`No ${token.symbol} coins available`);
       }
 
-      // 计算总余额
-      const totalBalance = tokenCoins.reduce(
+      // Calculate amount with decimals
+      const amountInSmallestUnit = new BigNumber(payload.value)
+        .multipliedBy(new BigNumber(10).pow(token.decimals))
+        .integerValue(BigNumber.ROUND_DOWN)
+        .toString();
+      const bigintAmount = BigInt(amountInSmallestUnit);
+
+      // Validate total balance
+      const totalBalance = coins.reduce(
         (sum, coin) => sum + BigInt(coin.balance),
         0n
       );
-
       if (totalBalance < bigintAmount) {
         throw new Error(`Insufficient ${token.symbol} balance`);
       }
 
-      // 检查是否需要合并 coins
-      if (BigInt(tokenCoins[0].balance) < bigintAmount) {
-        logger.debug("Need to merge coins for sufficient balance");
+      // Get BFC coins for gas payment
+      const bfcCoins = await this.client.getCoins({
+        owner: payload.from,
+        coinType: "0x2::bfc::BFC",
+      });
 
-        // 找到需要合并的 coins
-        let currentBalance = 0n;
-        const coinsToMerge = [];
-
-        for (const coin of tokenCoins) {
-          currentBalance += BigInt(coin.balance);
-          coinsToMerge.push(coin);
-          if (currentBalance >= bigintAmount) {
-            break;
-          }
-        }
-        logger.debug("Coins to merge:", coinsToMerge);
-
-        // 使用第一个 coin 作为主 coin
-        const primaryCoin = coinsToMerge[0];
-        const primaryCoinInput = tx.object(primaryCoin.coinObjectId);
-
-        // 合并其他 coins 到主 coin
-        if (coinsToMerge.length > 1) {
-          const mergeCoins = coinsToMerge
-            .slice(1)
-            .map((coin) => tx.object(coin.coinObjectId));
-
-          logger.debug(
-            "Merging coins:",
-            coinsToMerge.map((c) => c.coinObjectId)
-          );
-          tx.mergeCoins(primaryCoinInput, mergeCoins);
-        }
-
-        // 分割并转账
-        const [transferCoin] = tx.splitCoins(primaryCoinInput, [
-          tx.pure(bigintAmount),
-        ]);
-        tx.transferObjects([transferCoin], tx.pure(payload.to));
-      } else {
-        // 单个 coin 余额足够，直接使用
-        logger.debug("Using single coin for transfer");
-        const primaryCoin = tokenCoins[0];
-        const primaryCoinInput = tx.object(primaryCoin.coinObjectId);
-
-        const [transferCoin] = tx.splitCoins(primaryCoinInput, [
-          tx.pure(bigintAmount),
-        ]);
-        tx.transferObjects([transferCoin], tx.pure(payload.to));
+      if (bfcCoins.data.length === 0) {
+        throw new Error("No BFC coins available for gas payment");
       }
 
-      logger.debug("Building transaction...");
+      // Set gas payment using a BFC coin
+      tx.setGasPayment([
+        {
+          objectId: bfcCoins.data[0].coinObjectId,
+          digest: bfcCoins.data[0].digest,
+          version: bfcCoins.data[0].version,
+        },
+      ]);
+
+      // Find a single coin with sufficient balance
+      const coinWithSufficientBalance = coins.find(
+        (coin) => BigInt(coin.balance) >= bigintAmount
+      );
+
+      if (coinWithSufficientBalance) {
+        // Handle transfer based on whether it's a gas coin (BFC) or not
+        if (token.symbol === "BFC") {
+          // For BFC, use the gas coin
+          const [transferCoin] = tx.splitCoins(tx.gas, [tx.pure(bigintAmount)]);
+          tx.transferObjects([transferCoin], tx.pure(payload.to));
+        } else {
+          // For other tokens, use the first available coin
+          const primaryCoin = tx.object(coins[0].coinObjectId);
+          const [transferCoin] = tx.splitCoins(primaryCoin, [
+            tx.pure(bigintAmount),
+          ]);
+          tx.transferObjects([transferCoin], tx.pure(payload.to));
+        }
+      } else {
+        // If no single coin has sufficient balance, merge multiple coins
+        let remainingAmount = bigintAmount;
+        const coinsToUse = [];
+
+        for (const coin of coins) {
+          const coinBalance = BigInt(coin.balance);
+          if (coinBalance > 0n) {
+            coinsToUse.push({
+              coin: tx.object(coin.coinObjectId),
+              amount: coinBalance,
+            });
+            remainingAmount -= coinBalance;
+            if (remainingAmount <= 0n) break;
+          }
+        }
+
+        if (remainingAmount > 0n) {
+          throw new Error(
+            `Insufficient ${token.symbol} balance after combining coins`
+          );
+        }
+
+        // Merge coins and transfer
+        const mergedCoin = tx.mergeCoins(
+          coinsToUse[0].coin,
+          coinsToUse.slice(1).map((c) => c.coin)
+        );
+        if (token.symbol === "BFC") {
+          // For BFC, use the gas coin
+          const [transferCoin] = tx.splitCoins(tx.gas, [tx.pure(bigintAmount)]);
+          tx.transferObjects([transferCoin], tx.pure(payload.to));
+        } else {
+          // For other tokens, use the first available coin
+          const [transferCoin] = tx.splitCoins(mergedCoin, [
+            tx.pure(bigintAmount),
+          ]);
+          tx.transferObjects([transferCoin], tx.pure(payload.to));
+        }
+      }
+
+      // Build and sign transaction
       const txBytes = await tx.build({
         client: this.client,
         onlyTransactionKind: false,
       });
-      logger.debug("Transaction built successfully");
-
       const serializeTxn = messageWithIntent(
         IntentScope.TransactionData,
         txBytes
       );
-      // const tokenCoins = await getAllCoinsByCoinType(token.address);
-      logger.debug("Token coins:", tokenCoins);
-      logger.debug(
-        "serializeTxn hex with coinType:",
-        Buffer.from(serializeTxn).toString("hex") +
-          Buffer.from(tokenCoins[0].coinType).toString("hex")
-      );
-
+      logger.debug("Serialize transaction:", serializeTxn);
       const unsignedTxHex = Buffer.from(txBytes).toString("hex");
-      logger.debug("unsignedTxHex bytes hex:", unsignedTxHex);
 
-      const { signature, bytes } = await this.keypair.signTransactionBlock(
-        txBytes
-      );
-      logger.debug("Transaction signature:", signature);
+      const { signature } = await this.keypair.signTransactionBlock(txBytes);
       const response = await this.client.executeTransactionBlock({
         transactionBlock: txBytes,
         signature: signature,
