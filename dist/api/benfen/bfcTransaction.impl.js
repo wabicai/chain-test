@@ -95,7 +95,7 @@ class BfcTransactionImpl {
             const { payload } = params;
             const tx = new transactions_1.TransactionBlock();
             tx.setSender(payload.from);
-            const token = exports.TOKEN_INFO.BFC;
+            const token = exports.TOKEN_INFO.BUSD;
             // Get all coins
             const allCoins = await this.client.getCoins({
                 owner: payload.from,
@@ -116,73 +116,41 @@ class BfcTransactionImpl {
             if (totalBalance < bigintAmount) {
                 throw new Error(`Insufficient ${token.symbol} balance`);
             }
-            // Get BFC coins for gas payment
-            const bfcCoins = await this.client.getCoins({
-                owner: payload.from,
-                coinType: "0x2::bfc::BFC",
-            });
-            if (bfcCoins.data.length === 0) {
-                throw new Error("No BFC coins available for gas payment");
-            }
-            // Set gas payment using a BFC coin
-            tx.setGasPayment([
-                {
-                    objectId: bfcCoins.data[0].coinObjectId,
-                    digest: bfcCoins.data[0].digest,
-                    version: bfcCoins.data[0].version,
-                },
-            ]);
-            // Find a single coin with sufficient balance
-            const coinWithSufficientBalance = coins.find((coin) => BigInt(coin.balance) >= bigintAmount);
-            if (coinWithSufficientBalance) {
-                // Handle transfer based on whether it's a gas coin (BFC) or not
-                if (token.symbol === "BFC") {
-                    // For BFC, use the gas coin
-                    const [transferCoin] = tx.splitCoins(tx.gas, [tx.pure(bigintAmount)]);
-                    tx.transferObjects([transferCoin], tx.pure(payload.to));
-                }
-                else {
-                    // For other tokens, use the first available coin
-                    const primaryCoin = tx.object(coins[0].coinObjectId);
-                    const [transferCoin] = tx.splitCoins(primaryCoin, [
-                        tx.pure(bigintAmount),
-                    ]);
-                    tx.transferObjects([transferCoin], tx.pure(payload.to));
-                }
+            // 对于 BFC 转账，使用 gas coin 直接进行转账
+            if (token.symbol === "BFC") {
+                // Set gas payment using the first coin
+                const gasCoin = coins[0];
+                tx.setGasPayment([{
+                        objectId: gasCoin.coinObjectId,
+                        digest: gasCoin.digest,
+                        version: gasCoin.version,
+                    }]);
+                // Split from gas coin and transfer
+                const [transferCoin] = tx.splitCoins(tx.gas, [tx.pure(bigintAmount)]);
+                tx.transferObjects([transferCoin], tx.pure(payload.to));
             }
             else {
-                // If no single coin has sufficient balance, merge multiple coins
-                let remainingAmount = bigintAmount;
+                // 非 BFC 代币的原有逻辑
+                tx.setGasPayment([{
+                        objectId: coins[coins.length - 1].coinObjectId,
+                        digest: coins[coins.length - 1].digest,
+                        version: coins[coins.length - 1].version,
+                    }]);
+                const transferCoins = coins.slice(0, -1);
+                let currentBalance = 0n;
                 const coinsToUse = [];
-                for (const coin of coins) {
-                    const coinBalance = BigInt(coin.balance);
-                    if (coinBalance > 0n) {
-                        coinsToUse.push({
-                            coin: tx.object(coin.coinObjectId),
-                            amount: coinBalance,
-                        });
-                        remainingAmount -= coinBalance;
-                        if (remainingAmount <= 0n)
-                            break;
-                    }
+                for (const coin of transferCoins) {
+                    if (currentBalance >= bigintAmount)
+                        break;
+                    coinsToUse.push(coin);
+                    currentBalance += BigInt(coin.balance);
                 }
-                if (remainingAmount > 0n) {
-                    throw new Error(`Insufficient ${token.symbol} balance after combining coins`);
-                }
-                // Merge coins and transfer
-                const mergedCoin = tx.mergeCoins(coinsToUse[0].coin, coinsToUse.slice(1).map((c) => c.coin));
-                if (token.symbol === "BFC") {
-                    // For BFC, use the gas coin
-                    const [transferCoin] = tx.splitCoins(tx.gas, [tx.pure(bigintAmount)]);
-                    tx.transferObjects([transferCoin], tx.pure(payload.to));
-                }
-                else {
-                    // For other tokens, use the first available coin
-                    const [transferCoin] = tx.splitCoins(mergedCoin, [
-                        tx.pure(bigintAmount),
-                    ]);
-                    tx.transferObjects([transferCoin], tx.pure(payload.to));
-                }
+                const coinObjects = coinsToUse.map(coin => tx.object(coin.coinObjectId));
+                const primaryCoin = coinObjects.length === 1
+                    ? coinObjects[0]
+                    : tx.mergeCoins(coinObjects[0], coinObjects.slice(1));
+                const [transferCoin] = tx.splitCoins(primaryCoin, [tx.pure(bigintAmount)]);
+                tx.transferObjects([transferCoin], tx.pure(payload.to));
             }
             // Build and sign transaction
             const txBytes = await tx.build({
