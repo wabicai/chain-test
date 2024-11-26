@@ -29,7 +29,7 @@ async function main() {
     //   "BFC"
     // );
 
-    logger.info("Starting BFC transfer with params:", txParams);
+    logger.info("Starting transfer with params:", txParams);
     const result = await bfcImpl.sendTransaction(txParams);
     logger.info("Transaction completed:", {
       txHash: result.txHash,
