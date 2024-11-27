@@ -95,7 +95,7 @@ class BfcTransactionImpl {
             const { payload } = params;
             const tx = new transactions_1.TransactionBlock();
             tx.setSender(payload.from);
-            const token = exports.TOKEN_INFO.BUSD;
+            const token = exports.TOKEN_INFO.BFC;
             // 获取 BUSD coins
             const allCoins = await this.client.getCoins({
                 owner: payload.from,
@@ -178,24 +178,34 @@ class BfcTransactionImpl {
             const primaryCoinTypeLength = primaryCoinType.length;
             logger_1.logger.debug("Primary coin type length:", primaryCoinTypeLength);
             logger_1.logger.debug("Primary coin type:", primaryCoinType);
-            logger_1.logger.debug("Serialize transaction:", primaryCoinTypeLength.toString(16).padStart(2, "0") +
+            const formatdata = primaryCoinTypeLength.toString(16).padStart(2, "0") +
                 Buffer.from(primaryCoinType).toString("hex") +
-                Buffer.from(serializeTxn).toString("hex"));
+                "000000" +
+                Buffer.from(serializeTxn).toString("hex");
+            logger_1.logger.debug("Serialize transaction:", formatdata);
+            const hexString = "000000" + Buffer.from(serializeTxn).toString("hex");
+            const base64String = Buffer.from(hexString).toString("base64");
+            const origin64String = Buffer.from(Buffer.from(serializeTxn).toString("hex")).toString("base64");
+            logger_1.logger.debug("Hex string:", hexString);
+            logger_1.logger.debug("Base64 string:", base64String);
+            logger_1.logger.debug("Origin base64 string:", origin64String);
             const unsignedTxHex = Buffer.from(txBytes).toString("hex");
-            const { signature } = await this.keypair.signTransactionBlock(txBytes);
-            const response = await this.client.executeTransactionBlock({
-                transactionBlock: txBytes,
-                signature: signature,
-            });
-            return {
-                rawTx: unsignedTxHex,
-                txHash: response.digest,
-                signature: {
-                    r: signature.slice(0, 64),
-                    s: signature.slice(64, 128),
-                    v: 0,
-                },
-            };
+            logger_1.logger.debug("Unsigned transaction hex:", unsignedTxHex);
+            // const { signature } = await this.keypair.signTransactionBlock(txBytes);
+            // const response = await this.client.executeTransactionBlock({
+            //   transactionBlock: txBytes,
+            //   signature: signature,
+            // });
+            // return {
+            //   rawTx: unsignedTxHex,
+            //   txHash: response.digest,
+            //   signature: {
+            //     r: signature.slice(0, 64),
+            //     s: signature.slice(64, 128),
+            //     v: 0,
+            //   },
+            // };
+            return;
         }
         catch (error) {
             logger_1.logger.error("Transaction failed:", error);
@@ -265,13 +275,13 @@ class BfcTransactionImpl {
                 onlyTransactionKind: false,
             });
             logger_1.logger.debug("Transaction built successfully");
-            const { signature } = await this.keypair.signTransactionBlock(txBytes);
-            logger_1.logger.debug("Transaction signed successfully");
-            const response = await this.client.executeTransactionBlock({
-                transactionBlock: txBytes,
-                signature: signature,
-            });
-            logger_1.logger.debug("Split transaction completed:", response.digest);
+            // const { signature } = await this.keypair.signTransactionBlock(txBytes);
+            // logger.debug("Transaction signed successfully");
+            // const response = await this.client.executeTransactionBlock({
+            //   transactionBlock: txBytes,
+            //   signature: signature,
+            // });
+            // logger.debug("Split transaction completed:", response.digest);
         }
         catch (error) {
             logger_1.logger.error("Split operation failed:", error);

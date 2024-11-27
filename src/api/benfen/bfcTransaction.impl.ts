@@ -118,7 +118,7 @@ export class BfcTransactionImpl {
       const tx = new TransactionBlock();
       tx.setSender(payload.from);
 
-      const token = TOKEN_INFO.BUSD;
+      const token = TOKEN_INFO.BFC;
 
       // 获取 BUSD coins
       const allCoins = await this.client.getCoins({
@@ -217,29 +217,39 @@ export class BfcTransactionImpl {
       const primaryCoinTypeLength = primaryCoinType.length;
       logger.debug("Primary coin type length:", primaryCoinTypeLength);
       logger.debug("Primary coin type:", primaryCoinType);
-      logger.debug(
-        "Serialize transaction:",
+      const hexString = "000000" + Buffer.from(serializeTxn).toString("hex");
+      const formatdata =
         primaryCoinTypeLength.toString(16).padStart(2, "0") +
-          Buffer.from(primaryCoinType).toString("hex") +
-          Buffer.from(serializeTxn).toString("hex")
-      );
+        Buffer.from(primaryCoinType).toString("hex") +
+        hexString;
+      logger.debug("Serialize transaction:", formatdata);
+      const base64String = Buffer.from(hexString).toString("base64");
+      const origin64String = Buffer.from(
+        Buffer.from(serializeTxn).toString("hex")
+      ).toString("base64");
+      logger.debug("Hex string:", hexString);
+      logger.debug("Base64 string:", base64String);
+      logger.debug("Origin base64 string:", origin64String);
+
       const unsignedTxHex = Buffer.from(txBytes).toString("hex");
+      logger.debug("Unsigned transaction hex:", unsignedTxHex);
 
-      const { signature } = await this.keypair.signTransactionBlock(txBytes);
-      const response = await this.client.executeTransactionBlock({
-        transactionBlock: txBytes,
-        signature: signature,
-      });
+      // const { signature } = await this.keypair.signTransactionBlock(txBytes);
+      // const response = await this.client.executeTransactionBlock({
+      //   transactionBlock: txBytes,
+      //   signature: signature,
+      // });
 
-      return {
-        rawTx: unsignedTxHex,
-        txHash: response.digest,
-        signature: {
-          r: signature.slice(0, 64),
-          s: signature.slice(64, 128),
-          v: 0,
-        },
-      };
+      // return {
+      //   rawTx: unsignedTxHex,
+      //   txHash: response.digest,
+      //   signature: {
+      //     r: signature.slice(0, 64),
+      //     s: signature.slice(64, 128),
+      //     v: 0,
+      //   },
+      // };
+      return;
     } catch (error: any) {
       logger.error("Transaction failed:", error);
       throw new Error(`Transaction failed: ${error.message}`);
@@ -330,18 +340,40 @@ export class BfcTransactionImpl {
       });
       logger.debug("Transaction built successfully");
 
-      const { signature } = await this.keypair.signTransactionBlock(txBytes);
-      logger.debug("Transaction signed successfully");
+      // const { signature } = await this.keypair.signTransactionBlock(txBytes);
+      // logger.debug("Transaction signed successfully");
 
-      const response = await this.client.executeTransactionBlock({
-        transactionBlock: txBytes,
-        signature: signature,
-      });
+      // const response = await this.client.executeTransactionBlock({
+      //   transactionBlock: txBytes,
+      //   signature: signature,
+      // });
 
-      logger.debug("Split transaction completed:", response.digest);
+      // logger.debug("Split transaction completed:", response.digest);
     } catch (error: any) {
       logger.error("Split operation failed:", error);
       throw new Error(`Split operation failed: ${error.message}`);
     }
   }
+  // async sign(){
+  //   //  const { signature } = await this.keypair.signTransactionBlock(txBytes);
+  //   const signature = 'dd5f33746abfb8e69e3399c39b120a5a4ed92a5dec4d08527f5cbb318e7dc9655529f52b008dea485147599a1271b27192ccfd4b77e0c0addabba078b7450702'
+  //   const txBytes = await tx.build({
+  //     client: this.client,
+  //     onlyTransactionKind: false,
+  //   });
+  //     const response = await this.client.executeTransactionBlock({
+  //       transactionBlock: txBytes,
+  //       signature: signature,
+  //     });
+
+  //     return {
+  //       rawTx: unsignedTxHex,
+  //       txHash: response.digest,
+  //       signature: {
+  //         r: signature.slice(0, 64),
+  //         s: signature.slice(64, 128),
+  //         v: 0,
+  //       },
+  //     };
+  // }
 }
